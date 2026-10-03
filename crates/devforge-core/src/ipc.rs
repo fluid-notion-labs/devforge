@@ -35,6 +35,11 @@ pub enum Verb {
         filter: Option<String>,
     },
     ScenarioReload,
+    /// Enumerate `package.json` scripts under the service cwd (npm/wrangler
+    /// reveal their bindable argv; see spec: Providers).
+    NpmScripts {
+        name: String,
+    },
     /// Subscribe to the push channel. Does not get a per-verb reply: the
     /// connection switches to a one-way stream of `StreamEvent` lines
     /// (`Reply::Ok {"subscribed": true}` is sent once, first, for framing).

@@ -217,6 +217,15 @@ impl Engine {
                     Err(e) => e.into_reply(),
                 }
             }
+            Verb::NpmScripts { name } => {
+                if !self.known_service(&name).await {
+                    return EngineError::UnknownService { name }.into_reply();
+                }
+                match self.npm_scripts(&name).await {
+                    Ok(v) => Reply::Ok(v),
+                    Err(e) => e.into_reply(),
+                }
+            }
             Verb::Subscribe {} => Reply::Ok(json!({ "subscribed": true })),
         }
     }
@@ -248,6 +257,33 @@ impl Engine {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         Ok(json!({ "state": "timeout" }))
+    }
+
+    /// Enumerate the scripts object of the service's `package.json`
+    /// (npm/wrangler providers).
+    async fn npm_scripts(&self, name: &str) -> Result<Value> {
+        let spec = self.scenario.read().await.services.get(name).cloned();
+        let Some(spec) = spec else {
+            return Err(EngineError::UnknownService {
+                name: name.to_string(),
+            });
+        };
+        let cwd = self.root.join(spec.cwd.as_deref().unwrap_or(""));
+        let pkg = cwd.join("package.json");
+        let text = std::fs::read_to_string(&pkg).map_err(|source| EngineError::ScenarioRead {
+            path: pkg.clone(),
+            source,
+        })?;
+        let json: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| EngineError::Ipc {
+                message: format!("{}: {e}", pkg.display()),
+            })?;
+        let scripts = json
+            .get("scripts")
+            .and_then(|s| s.as_object())
+            .map(|o| o.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        Ok(json!({ "scripts": scripts }))
     }
 
     /// Start a profile: named set, or the default (every non-`lazy` service

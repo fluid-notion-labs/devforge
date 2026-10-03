@@ -111,6 +111,17 @@ impl Client {
         }
     }
 
+    /// `package.json` scripts for an npm/wrangler service.
+    pub async fn npm_scripts(&mut self, name: &str) -> Result<Vec<String>> {
+        match self.call(&Verb::NpmScripts { name: name.into() }).await {
+            Reply::Ok(v) => {
+                let scripts = v.get("scripts").cloned().unwrap_or_default();
+                Ok(serde_json::from_value(scripts)?)
+            }
+            Reply::Err { message } => Err(EngineError::Ipc { message }),
+        }
+    }
+
     /// Open a second connection, subscribe, and push every StreamEvent into
     /// `tx` (drop the receiver to stop the task).
     pub async fn subscribe(socket: PathBuf, tx: mpsc::UnboundedSender<StreamEvent>) -> Result<()> {
