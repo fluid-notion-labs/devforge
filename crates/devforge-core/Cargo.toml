@@ -1,0 +1,23 @@
+[package]
+name = "devforge-core"
+version = "0.1.0"
+edition = "2024"
+description = "Engine: scenario TOML, providers, state machine, sqlite store, MCP socket"
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+rusqlite = { workspace = true }
+tokio-rusqlite = { workspace = true }
+rusqlite_migration = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+indexmap = { workspace = true }
+shell-words = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
