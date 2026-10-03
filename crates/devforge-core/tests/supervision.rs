@@ -154,3 +154,48 @@ command = "sh -c 'echo oops >&2; exit 3'"
         .await;
     assert!(matches!(reply, Reply::Err { .. }));
 }
+
+#[tokio::test]
+async fn staleness_badges_and_stamps() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dev = tmp.path().join(".devforge");
+    std::fs::create_dir_all(&dev).unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(tmp.path().join("src/core.rs"), "fn a() {}").unwrap();
+    std::fs::write(
+        dev.join("scenario.toml"),
+        r#"
+[scenario]
+name = "t"
+
+[jobs.setup]
+command = "echo fine"
+stale_when = ["src/**"]
+"#,
+    )
+    .unwrap();
+    let engine = Engine::open(tmp.path().to_path_buf()).await.unwrap();
+
+    // stale before any clean run: stamp missing
+    let reply = engine.dispatch(Verb::ScenarioStatus).await;
+    let Reply::Ok(v) = reply else { panic!() };
+    assert_eq!(v["jobs"][0]["stale"], serde_json::json!(true));
+
+    // clean run stamps → no longer stale
+    let reply = engine
+        .dispatch(Verb::JobRun {
+            name: "setup".into(),
+        })
+        .await;
+    assert!(matches!(reply, Reply::Ok(_)));
+    let reply = engine.dispatch(Verb::ScenarioStatus).await;
+    let Reply::Ok(v) = reply else { panic!() };
+    assert_eq!(v["jobs"][0]["stale"], serde_json::json!(false));
+
+    // touch a watched file → stale again
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(tmp.path().join("src/core.rs"), "fn b() {}").unwrap();
+    let reply = engine.dispatch(Verb::ScenarioStatus).await;
+    let Reply::Ok(v) = reply else { panic!() };
+    assert_eq!(v["jobs"][0]["stale"], serde_json::json!(true));
+}

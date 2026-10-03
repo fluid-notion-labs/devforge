@@ -406,6 +406,29 @@ impl Engine {
             )
             .await?;
 
+        // A clean run refreshes the stamp (staleness discipline lives here).
+        if output.status.success() && !job.stale_when.is_empty() {
+            let stamp = config::stamp_path(&self.root, name);
+            if let Some(dir) = stamp.parent() {
+                std::fs::create_dir_all(dir).map_err(|source| EngineError::StoreOpen {
+                    path: dir.to_path_buf(),
+                    source,
+                })?;
+            }
+            std::fs::write(
+                &stamp,
+                output
+                    .status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_default(),
+            )
+            .map_err(|source| EngineError::StoreOpen {
+                path: stamp.clone(),
+                source,
+            })?;
+        }
+
         Ok(json!({
             "exit_code": output.status.code(),
             "success": output.status.success(),
@@ -446,7 +469,16 @@ impl Engine {
             "name": scenario.scenario.name,
             "profile": rows.iter().find_map(|r| r.profile.clone()),
             "services": services,
-            "jobs": scenario.jobs.keys().collect::<Vec<_>>(),
+            "jobs": scenario
+                .jobs
+                .iter()
+                .map(|(name, job)| {
+                    json!({
+                        "name": name,
+                        "stale": config::is_stale(job, &self.root, name),
+                    })
+                })
+                .collect::<Vec<_>>(),
             "profiles": scenario.profiles.keys().collect::<Vec<_>>(),
         }))
     }
