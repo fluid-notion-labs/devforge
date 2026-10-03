@@ -21,6 +21,9 @@ use crate::store::Store;
 pub const STOP_GRACE: Duration = Duration::from_secs(5);
 /// Cancel-watch: `starting` that never reaches `up` fails after this.
 pub const START_TIMEOUT: Duration = Duration::from_secs(30);
+/// Compiling signal revert: with no further building lines in this window,
+/// `compiling` goes back to `up`.
+pub const COMPILING_IDLE: Duration = Duration::from_secs(3);
 
 pub fn now_ms() -> u64 {
     SystemTime::now()
@@ -271,7 +274,53 @@ impl Supervisor {
                             .await;
                         }
                     }
-                    Some(Signal::Compiling { signal }) | Some(Signal::Failure { signal }) => {
+                    Some(Signal::Compiling { signal }) => {
+                        let _ = events.send(StreamEvent::BuildSignal {
+                            service: name.clone(),
+                            signal: signal.clone(),
+                        });
+                        let state = live.lock().await.state;
+                        if state == ServiceState::Up {
+                            live.lock().await.state = ServiceState::Compiling;
+                            transition_v(
+                                &store,
+                                &events,
+                                &name,
+                                ServiceState::Up,
+                                ServiceState::Compiling,
+                                TransitionCause::ProviderPattern { pattern: signal },
+                            )
+                            .await;
+                        }
+                        if state == ServiceState::Compiling {
+                            schedule_revert_up(
+                                store.clone(),
+                                events.clone(),
+                                name.clone(),
+                                live.clone(),
+                            );
+                        }
+                    }
+                    Some(Signal::Stable { signal }) => {
+                        let _ = events.send(StreamEvent::BuildSignal {
+                            service: name.clone(),
+                            signal: signal.clone(),
+                        });
+                        let state = live.lock().await.state;
+                        if state == ServiceState::Compiling {
+                            live.lock().await.state = ServiceState::Up;
+                            transition_v(
+                                &store,
+                                &events,
+                                &name,
+                                ServiceState::Compiling,
+                                ServiceState::Up,
+                                TransitionCause::ProviderPattern { pattern: signal },
+                            )
+                            .await;
+                        }
+                    }
+                    Some(Signal::Failure { signal }) => {
                         let _ = events.send(StreamEvent::BuildSignal {
                             service: name.clone(),
                             signal,
@@ -419,12 +468,12 @@ fn io_err(e: impl std::fmt::Display) -> EngineError {
     }
 }
 
-#[allow(dead_code)] // Failure/Compiling exercised in step-5 tests
 #[derive(Debug, PartialEq)]
 enum Signal {
     Ready { pattern: String },
     Compiling { signal: String },
     Failure { signal: String },
+    Stable { signal: String },
 }
 
 /// Provider-pattern signal classification (v1: pattern heuristics only).
@@ -482,10 +531,39 @@ fn line_match(line: &str, provider: ProviderKind, ready_when: Option<&str>) -> O
                     signal: "cargo compiling".into(),
                 });
             }
+            if line.starts_with("Finished ") {
+                return Some(Signal::Stable {
+                    signal: "cargo finished".into(),
+                });
+            }
             None
         }
         ProviderKind::Exec => None,
     }
+}
+
+/// Revert `compiling → up` after the idle window if nothing re-entered.
+fn schedule_revert_up(
+    store: Arc<Store>,
+    events: EventSender<StreamEvent>,
+    name: String,
+    live: Arc<Mutex<Live>>,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(COMPILING_IDLE).await;
+        if live.lock().await.state == ServiceState::Compiling {
+            live.lock().await.state = ServiceState::Up;
+            transition_v(
+                &store,
+                &events,
+                &name,
+                ServiceState::Compiling,
+                ServiceState::Up,
+                TransitionCause::Timeout,
+            )
+            .await;
+        }
+    });
 }
 
 async fn transition_v(
@@ -513,13 +591,11 @@ async fn transition_v(
 mod tests {
     use super::*;
 
+    fn m2(provider: ProviderKind, line: &str) -> Option<Signal> {
+        line_match(line, provider, None)
+    }
     fn m(provider: ProviderKind, line: &str, ready: Option<&str>) -> Option<Signal> {
-        match line_match(line, provider, ready) {
-            Some(Signal::Ready { pattern }) => Some(Signal::Ready { pattern }),
-            Some(Signal::Compiling { signal }) => Some(Signal::Compiling { signal }),
-            Some(Signal::Failure { signal }) => Some(Signal::Failure { signal }),
-            None => None,
-        }
+        line_match(line, provider, ready)
     }
 
     #[test]
@@ -561,6 +637,14 @@ mod tests {
     }
 
     #[test]
+    fn cargo_finished_is_stable() {
+        assert!(matches!(
+            m2(ProviderKind::Cargo, "Finished dev [unoptimized] target(s)"),
+            Some(Signal::Stable { .. })
+        ));
+    }
+
+    #[test]
     fn cargo_patterns() {
         assert!(matches!(
             m(ProviderKind::Cargo, "Compiling devforge-core v0.1.0", None),
@@ -570,6 +654,9 @@ mod tests {
             m(ProviderKind::Cargo, "error[E0432]: unresolved import", None),
             Some(Signal::Failure { .. })
         ));
-        assert_eq!(m(ProviderKind::Cargo, "Finished dev profile", None), None);
+        assert!(matches!(
+            m(ProviderKind::Cargo, "Finished dev profile", None),
+            Some(Signal::Stable { .. })
+        ));
     }
 }
