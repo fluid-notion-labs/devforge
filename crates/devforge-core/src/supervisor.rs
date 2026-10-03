@@ -22,7 +22,7 @@ pub const STOP_GRACE: Duration = Duration::from_secs(5);
 /// Cancel-watch: `starting` that never reaches `up` fails after this.
 pub const START_TIMEOUT: Duration = Duration::from_secs(30);
 
-fn now_ms() -> u64 {
+pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

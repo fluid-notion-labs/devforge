@@ -45,7 +45,7 @@ pub struct ServiceSpec {
     pub after: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct JobSpec {
     #[serde(default)]
     pub cwd: Option<String>,

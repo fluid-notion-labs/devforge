@@ -188,19 +188,34 @@ impl Store {
             })
     }
 
-    /// Append a log line event (falls under the `events` table, kind = log_line).
-    pub async fn append_log(&self, service: String, line: String, at_unix_ms: u64) -> Result<()> {
+    /// Append an arbitrary event row.
+    pub async fn append_event(
+        &self,
+        service: Option<String>,
+        kind: &str,
+        payload: String,
+        at_unix_ms: u64,
+    ) -> Result<()> {
+        let kind = kind.to_string();
         self.conn
             .call(move |conn| -> rusqlite::Result<_> {
                 conn.execute(
-                    "INSERT INTO events (at, service, kind, payload) VALUES (?1, ?2, 'log_line', ?3)",
-                    params![at_unix_ms as i64, service, line],
+                    "INSERT INTO events (at, service, kind, payload) VALUES (?1, ?2, ?3, ?4)",
+                    params![at_unix_ms as i64, service, kind, payload],
                 )?;
                 Ok(())
             })
             .await
-            .map_err(|e| EngineError::StoreQuery { message: e.to_string() })?;
+            .map_err(|e| EngineError::StoreQuery {
+                message: e.to_string(),
+            })?;
         Ok(())
+    }
+
+    /// Append a log line event (falls under the `events` table, kind = log_line).
+    pub async fn append_log(&self, service: String, line: String, at_unix_ms: u64) -> Result<()> {
+        self.append_event(Some(service), "log_line", line, at_unix_ms)
+            .await
     }
 
     /// Rows of the `runs` table: insert a start attempt, return its id.

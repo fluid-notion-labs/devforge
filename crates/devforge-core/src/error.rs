@@ -17,6 +17,8 @@ pub enum EngineError {
     },
     #[error("unknown service: {name}")]
     UnknownService { name: String },
+    #[error("unknown job: {name}")]
+    UnknownJob { name: String },
     #[error("profile `{name}` is not defined")]
     UnknownProfile { name: String },
     #[error("failed to create store dir {}: {source}", path.display())]

@@ -15,7 +15,7 @@ use crate::error::{EngineError, Result};
 use crate::ipc::{DEFAULT_SOCKET_PATH, Reply, Verb};
 use crate::state::ServiceState;
 use crate::store::Store;
-use crate::supervisor::Supervisor;
+use crate::supervisor::{Supervisor, now_ms};
 
 /// The engine: scenario config + sqlite store + supervisor, shared by all
 /// IPC connections.
@@ -208,9 +208,15 @@ impl Engine {
                 Ok(()) => Reply::Ok(json!({ "stopped": true })),
                 Err(e) => e.into_reply(),
             },
-            Verb::JobRun { .. } => Reply::Err {
-                message: "jobs not implemented yet".into(),
-            },
+            Verb::JobRun { name } => {
+                if !self.scenario.read().await.jobs.contains_key(&name) {
+                    return EngineError::UnknownJob { name }.into_reply();
+                }
+                match self.run_job(&name).await {
+                    Ok(v) => Reply::Ok(v),
+                    Err(e) => e.into_reply(),
+                }
+            }
             Verb::Subscribe {} => Reply::Ok(json!({ "subscribed": true })),
         }
     }
@@ -269,6 +275,70 @@ impl Engine {
             }
         }
         Reply::Ok(json!({ "started": started, "errors": errors }))
+    }
+
+    /// Run a `[jobs.*]` entry to completion: shell-free argv, output tailed
+    /// into `events` as `log_line` rows, result flagged as `job_result`.
+    async fn run_job(&self, name: &str) -> Result<Value> {
+        let job = self.scenario.read().await.jobs.get(name).cloned();
+        let Some(job) = job else {
+            return Err(EngineError::UnknownJob {
+                name: name.to_string(),
+            });
+        };
+        let cwd = self.root.join(job.cwd.as_deref().unwrap_or(""));
+        let mut argv = shell_words::split(&job.command).map_err(|e| EngineError::Ipc {
+            message: format!("job `{name}` argv: {e}"),
+        })?;
+        if argv.is_empty() {
+            return Err(EngineError::Ipc {
+                message: format!("job `{name}` has empty command"),
+            });
+        }
+        let (prog, args) = (argv.remove(0), argv);
+
+        tracing::info!(job = %name, "running job");
+        let output = tokio::process::Command::new(prog)
+            .args(&args)
+            .current_dir(&cwd)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| EngineError::Ipc {
+                message: format!("job `{name}` spawn: {e}"),
+            })?;
+
+        // Interleave stdout/stderr in order of arrival; combine for the tail.
+        let mut out = String::from_utf8_lossy(&output.stdout).into_owned();
+        out.push_str(&String::from_utf8_lossy(&output.stderr));
+
+        let tail: Vec<String> = out
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_owned)
+            .collect();
+        let tail_last: Vec<String> = tail[tail.len().saturating_sub(20)..].to_vec();
+        for line in &tail {
+            self.store
+                .append_event(Some(name.to_string()), "log_line", line.clone(), now_ms())
+                .await?;
+        }
+        self.store
+            .append_event(
+                Some(name.to_string()),
+                "job_result",
+                serde_json::to_string(&json!({ "exit_code": output.status.code() }))?,
+                now_ms(),
+            )
+            .await?;
+
+        Ok(json!({
+            "exit_code": output.status.code(),
+            "success": output.status.success(),
+            "tail": tail_last,
+        }))
     }
 
     async fn known_service(&self, name: &str) -> bool {
