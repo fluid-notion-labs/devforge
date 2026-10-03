@@ -47,6 +47,7 @@ async fn status_roundtrip_and_unknown_verb() {
     }
 
     let (mut reader, mut writer) = connect(&socket).await;
+    let _ = reader;
 
     match roundtrip(&mut reader, &mut writer, &Verb::ScenarioStatus).await {
         Reply::Ok(v) => {
@@ -115,7 +116,7 @@ async fn stream_subscriber_receives_events() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
-    let (mut reader, _writer) = connect(&socket).await;
+    let (_reader, _writer) = connect(&socket).await;
 
     // Subscribe: first line is the Ok framing reply, then pushed events.
     use tokio::io::AsyncWriteExt;
