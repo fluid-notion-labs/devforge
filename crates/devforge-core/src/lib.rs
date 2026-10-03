@@ -6,3 +6,4 @@ pub mod provider;
 pub mod server;
 pub mod state;
 pub mod store;
+pub mod supervisor;

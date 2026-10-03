@@ -15,12 +15,15 @@ use crate::error::{EngineError, Result};
 use crate::ipc::{DEFAULT_SOCKET_PATH, Reply, Verb};
 use crate::state::ServiceState;
 use crate::store::Store;
+use crate::supervisor::Supervisor;
 
-/// The engine: scenario config + sqlite store, shared by all IPC connections.
+/// The engine: scenario config + sqlite store + supervisor, shared by all
+/// IPC connections.
 pub struct Engine {
     pub root: PathBuf,
     scenario: RwLock<Scenario>,
-    store: Store,
+    store: Arc<Store>,
+    sup: Arc<Supervisor>,
     events: tokio::sync::broadcast::Sender<crate::ipc::StreamEvent>,
 }
 
@@ -28,13 +31,16 @@ impl Engine {
     /// Open the store under `root/.devforge/` and load the scenario.
     pub async fn open(root: PathBuf) -> Result<Self> {
         let scenario = config::load(&root)?;
-        let store = Store::open(&root.join(".devforge/state.sqlite3")).await?;
+        let store = Arc::new(Store::open(&root.join(".devforge/state.sqlite3")).await?);
         info!(root = %root.display(), name = %scenario.scenario.name, "engine open");
+        let events = tokio::sync::broadcast::channel(256).0;
+        let sup = Arc::new(Supervisor::new(root.clone(), store.clone(), events.clone()));
         Ok(Self {
             root,
             scenario: RwLock::new(scenario),
             store,
-            events: tokio::sync::broadcast::channel(256).0,
+            sup,
+            events,
         })
     }
 
@@ -143,14 +149,12 @@ impl Engine {
                 Err(e) => e.into_reply(),
             },
             Verb::ScenarioStart { profile } => {
-                match (profile, self.scenario.read().await.profiles.clone()) {
-                    (Some(p), profiles) if !profiles.contains_key(&p) => {
-                        EngineError::UnknownProfile { name: p }.into_reply()
-                    }
-                    _ => Reply::Err {
-                        message: "process supervision not implemented yet".into(),
-                    },
+                if let Some(p) = &profile
+                    && !self.scenario.read().await.profiles.contains_key(p)
+                {
+                    return EngineError::UnknownProfile { name: p.clone() }.into_reply();
                 }
+                self.start_profile(profile).await
             }
             Verb::ScenarioReload => match self.reload().await {
                 Ok(()) => Reply::Ok(json!({ "reloaded": true })),
@@ -169,15 +173,102 @@ impl Engine {
                 Ok(v) => Reply::Ok(v),
                 Err(e) => e.into_reply(),
             },
-            Verb::ScenarioStop
-            | Verb::ServiceStart { .. }
-            | Verb::ServiceRestart { .. }
-            | Verb::ServiceStop { .. }
-            | Verb::JobRun { .. } => Reply::Err {
-                message: "process supervision not implemented yet".into(),
+            Verb::ServiceStart {
+                name,
+                wait_for_ready,
+            } => {
+                if !self.known_service(&name).await {
+                    return EngineError::UnknownService { name }.into_reply();
+                }
+                match self.start_service(&name, wait_for_ready).await {
+                    Ok(state) => Reply::Ok(state),
+                    Err(e) => e.into_reply(),
+                }
+            }
+            Verb::ServiceRestart { name } => {
+                if !self.known_service(&name).await {
+                    return EngineError::UnknownService { name }.into_reply();
+                }
+                let _ = self.sup.stop(&name).await;
+                match self.start_service(&name, None).await {
+                    Ok(state) => Reply::Ok(state),
+                    Err(e) => e.into_reply(),
+                }
+            }
+            Verb::ServiceStop { name } => {
+                if !self.known_service(&name).await {
+                    return EngineError::UnknownService { name }.into_reply();
+                }
+                match self.sup.stop(&name).await {
+                    Ok(started) => Reply::Ok(json!({ "stopped": started })),
+                    Err(e) => e.into_reply(),
+                }
+            }
+            Verb::ScenarioStop => match self.sup.stop_all().await {
+                Ok(()) => Reply::Ok(json!({ "stopped": true })),
+                Err(e) => e.into_reply(),
+            },
+            Verb::JobRun { .. } => Reply::Err {
+                message: "jobs not implemented yet".into(),
             },
             Verb::Subscribe {} => Reply::Ok(json!({ "subscribed": true })),
         }
+    }
+
+    /// Start a service, optionally blocking until `up`/`failed`.
+    async fn start_service(&self, name: &str, wait_for_ready: Option<bool>) -> Result<Value> {
+        let spec = self.scenario.read().await.services.get(name).cloned();
+        let Some(spec) = spec else {
+            return Err(EngineError::UnknownService {
+                name: name.to_string(),
+            });
+        };
+        let spawned = self.sup.start(name, &spec).await?;
+        let state = self
+            .sup
+            .live_state(name)
+            .await
+            .unwrap_or(ServiceState::Idle);
+        if wait_for_ready != Some(true) {
+            return Ok(json!({ "started": spawned, "state": state }));
+        }
+        // Block until up/failed (the cancel-watch enforces the same timeout).
+        for _ in 0..300 {
+            if let Some(state) = self.sup.live_state(name).await
+                && matches!(state, ServiceState::Up | ServiceState::Failed)
+            {
+                return Ok(json!({ "state": state }));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        Ok(json!({ "state": "timeout" }))
+    }
+
+    /// Start a profile (or the default: every non-lazy service, config order).
+    async fn start_profile(&self, profile: Option<String>) -> Reply {
+        let scenario = self.scenario.read().await;
+        let names: Vec<String> = match &profile {
+            Some(p) => scenario.profiles.get(p).cloned().unwrap_or_default(),
+            None => scenario
+                .services
+                .iter()
+                .filter(|(_, s)| !s.lazy)
+                .map(|(k, _)| k.clone())
+                .collect(),
+        };
+        let mut started = Vec::new();
+        let mut errors = Vec::new();
+        for name in names {
+            let Some(spec) = scenario.services.get(&name) else {
+                errors.push(format!("profile names unknown service `{name}`"));
+                continue;
+            };
+            match self.sup.start(&name, spec).await {
+                Ok(_) => started.push(name),
+                Err(e) => errors.push(e.to_string()),
+            }
+        }
+        Reply::Ok(json!({ "started": started, "errors": errors }))
     }
 
     async fn known_service(&self, name: &str) -> bool {
@@ -188,14 +279,20 @@ impl Engine {
     async fn status(&self) -> Result<Value> {
         let scenario = self.scenario.read().await;
         let rows = self.store.current_state().await?;
+        let live = self.sup.snapshot().await;
         let services: Vec<Value> = scenario
             .services
             .iter()
             .map(|(name, spec)| {
                 let row = rows.iter().find(|r| r.service == *name);
+                let state = live
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, s)| *s)
+                    .or(row.map(|r| r.state));
                 json!({
                     "name": name,
-                    "state": row.map_or(ServiceState::Idle, |r| r.state),
+                    "state": state.unwrap_or(ServiceState::Idle),
                     "port": spec.port,
                     "lazy": spec.lazy,
                     "provider": spec.provider,

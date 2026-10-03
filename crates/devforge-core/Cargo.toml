@@ -18,6 +18,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 indexmap = { workspace = true }
 shell-words = { workspace = true }
+portable-pty = { workspace = true }
+libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

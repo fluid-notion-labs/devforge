@@ -23,7 +23,7 @@ pub struct ScenarioMeta {
     pub name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ServiceSpec {
     pub provider: String,
     #[serde(default)]

@@ -203,6 +203,52 @@ impl Store {
         Ok(())
     }
 
+    /// Rows of the `runs` table: insert a start attempt, return its id.
+    pub async fn record_run_start(
+        &self,
+        service: String,
+        profile: Option<String>,
+        pid: Option<i32>,
+        cwd: String,
+        command: String,
+        at_unix_ms: u64,
+    ) -> Result<i64> {
+        self.conn
+            .call(move |conn| -> rusqlite::Result<i64> {
+                conn.execute(
+                    "INSERT INTO runs (service, profile, pid, started_at, cwd, command)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![service, profile, pid, at_unix_ms as i64, cwd, command],
+                )?;
+                Ok(conn.last_insert_rowid())
+            })
+            .await
+            .map_err(|e| EngineError::StoreQuery {
+                message: e.to_string(),
+            })
+    }
+
+    /// Close out a run row.
+    pub async fn record_run_end(
+        &self,
+        run_id: i64,
+        at_unix_ms: u64,
+        exit_code: Option<i32>,
+    ) -> Result<()> {
+        self.conn
+            .call(move |conn| -> rusqlite::Result<_> {
+                conn.execute(
+                    "UPDATE runs SET ended_at = ?2, exit_code = ?3 WHERE id = ?1",
+                    params![run_id, at_unix_ms as i64, exit_code],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(|e| EngineError::StoreQuery {
+                message: e.to_string(),
+            })
+    }
+
     /// Last `tail` event rows for an `event_query`, newest last; optional
     /// `service`/`kind` filters.
     pub async fn event_query(

@@ -55,6 +55,8 @@ one-liner here.
 | `toml` | scenario file parsing |
 | `indexmap` | preserve scenario file order of services/profiles in UI listings |
 | `shell-words` | split `exec`/`cargo` command strings into argv |
+| `portable-pty` | service children run under a PTY so ANSI output survives (spec: Engine) |
+| `libc` | `kill` on the child's process group for TERM/KILL stop semantics |
 | `tracing` / `tracing-subscriber` | engine logging (to file, not the TUI); `env-filter` feature for `RUST_LOG` control |
 | `ratatui`, `crossterm` | TUI front-end |
 | `rusqlite` (`bundled`), `tokio-rusqlite`, `rusqlite_migration` | M0 store: embedded sqlite, no system dep; single connection behind a tokio actor; `user_version` migrations |

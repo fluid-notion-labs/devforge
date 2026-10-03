@@ -16,6 +16,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 indexmap = { version = "2", features = ["serde"] }
 shell-words = "1"
+portable-pty = { version = "0.9" } # service children under a PTY: ANSI output survives
+libc = { version = "0.2" }        # process-group kill for stop semantics
 rusqlite = { version = "0.40", features = ["bundled"] }
 tokio-rusqlite = "0.8"
 rusqlite_migration = "2"
