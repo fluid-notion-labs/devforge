@@ -35,6 +35,10 @@ pub enum Verb {
         filter: Option<String>,
     },
     ScenarioReload,
+    /// Subscribe to the push channel. Does not get a per-verb reply: the
+    /// connection switches to a one-way stream of `StreamEvent` lines
+    /// (`Reply::Ok {"subscribed": true}` is sent once, first, for framing).
+    Subscribe {},
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,6 +51,7 @@ pub enum Reply {
 /// Push channel: every transition / build signal, fanned to all subscribers.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
+#[derive(Clone)]
 pub enum StreamEvent {
     Transition(Transition),
     BuildSignal { service: String, signal: String },

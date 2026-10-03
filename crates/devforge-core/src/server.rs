@@ -21,6 +21,7 @@ pub struct Engine {
     pub root: PathBuf,
     scenario: RwLock<Scenario>,
     store: Store,
+    events: tokio::sync::broadcast::Sender<crate::ipc::StreamEvent>,
 }
 
 impl Engine {
@@ -33,7 +34,14 @@ impl Engine {
             root,
             scenario: RwLock::new(scenario),
             store,
+            events: tokio::sync::broadcast::channel(256).0,
         })
+    }
+
+    /// Emit a stream event to all subscribers (stream channel).
+    pub fn emit(&self, event: crate::ipc::StreamEvent) {
+        // 0 subscribers is normal (headless); dropped events are expected churn.
+        let _ = self.events.send(event);
     }
 
     /// Re-read the scenario TOML, keeping state (config::load falls back to an
@@ -89,10 +97,15 @@ impl Engine {
     async fn handle_conn(self: Arc<Self>, stream: UnixStream) -> Result<()> {
         let (reader, mut writer) = stream.into_split();
         let mut lines = BufReader::new(reader).lines();
-        while let Some(line) = lines.next_line().await.map_err(|e| EngineError::Ipc {
-            message: e.to_string(),
-        })? {
+        while let Some(line) = lines.next_line().await.map_err(io_err)? {
             let reply = match serde_json::from_str::<Verb>(&line) {
+                Ok(Verb::Subscribe {}) => {
+                    let mut out = serde_json::to_vec(&Reply::Ok(json!({ "subscribed": true })))
+                        .map_err(EngineError::from)?;
+                    out.push(b'\n');
+                    writer.write_all(&out).await.map_err(io_err)?;
+                    return self.pump_stream(writer).await;
+                }
                 Ok(verb) => self.dispatch(verb).await,
                 Err(e) => Reply::Err {
                     message: format!("bad verb: {e}"),
@@ -100,11 +113,26 @@ impl Engine {
             };
             let mut out = serde_json::to_vec(&reply).map_err(EngineError::from)?;
             out.push(b'\n');
-            writer.write_all(&out).await.map_err(|e| EngineError::Ipc {
-                message: e.to_string(),
-            })?;
+            writer.write_all(&out).await.map_err(io_err)?;
         }
         Ok(())
+    }
+    /// After `Subscribe`: push StreamEvents to this writer until the client leaves.
+    async fn pump_stream(&self, mut writer: tokio::net::unix::OwnedWriteHalf) -> Result<()> {
+        let mut rx = self.events.subscribe();
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let mut line = serde_json::to_vec(&event).map_err(EngineError::from)?;
+                    line.push(b'\n');
+                    writer.write_all(&line).await.map_err(io_err)?;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    warn!("stream subscriber lagged, {n} events skipped");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+            }
+        }
     }
 
     /// One verb → one reply.
@@ -148,6 +176,7 @@ impl Engine {
             | Verb::JobRun { .. } => Reply::Err {
                 message: "process supervision not implemented yet".into(),
             },
+            Verb::Subscribe {} => Reply::Ok(json!({ "subscribed": true })),
         }
     }
 
@@ -203,6 +232,12 @@ impl Engine {
         }
         let rows = self.store.event_query(service, kind, tail).await?;
         Ok(json!({ "events": rows }))
+    }
+}
+
+fn io_err(e: std::io::Error) -> EngineError {
+    EngineError::Ipc {
+        message: e.to_string(),
     }
 }
 

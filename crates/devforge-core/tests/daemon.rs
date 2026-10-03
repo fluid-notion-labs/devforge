@@ -101,3 +101,41 @@ async fn second_bind_rejected_while_daemon_live() {
     let err = second.serve().await.unwrap_err();
     assert!(err.to_string().contains("already answers"), "{err}");
 }
+
+#[tokio::test]
+async fn stream_subscriber_receives_events() {
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = Arc::new(Engine::open(tmp.path().to_path_buf()).await.unwrap());
+    tokio::spawn(engine.clone().serve());
+    let socket = engine.socket_path().await;
+    for _ in 0..50 {
+        if UnixStream::connect(&socket).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let (mut reader, _writer) = connect(&socket).await;
+
+    // Subscribe: first line is the Ok framing reply, then pushed events.
+    use tokio::io::AsyncWriteExt;
+    let mut sub = UnixStream::connect(&socket).await.unwrap();
+    sub.write_all(b"{\"verb\":\"subscribe\"}\n").await.unwrap();
+    let mut sub_lines = tokio::io::BufReader::new(sub).lines();
+    let framing = sub_lines.next_line().await.unwrap().unwrap();
+    assert!(framing.contains("\"subscribed\""));
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await; // let the pump start
+    engine.emit(devforge_core::ipc::StreamEvent::BuildSignal {
+        service: "web".into(),
+        signal: "test-signal".into(),
+    });
+    let event = sub_lines.next_line().await.unwrap().unwrap();
+    let parsed: devforge_core::ipc::StreamEvent = serde_json::from_str(&event).unwrap();
+    match parsed {
+        devforge_core::ipc::StreamEvent::BuildSignal { service, signal } => {
+            assert_eq!((service.as_str(), signal.as_str()), ("web", "test-signal"));
+        }
+        other => panic!("expected BuildSignal, got {other:?}"),
+    }
+}
