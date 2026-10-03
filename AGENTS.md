@@ -35,6 +35,12 @@ Local dev scenario orchestrator (Rust). See `plan/index.md` (status),
 - Do not bundle unrelated changes into one commit; `plan/docs` sync counts as
   its own commit when the design deviates.
 
+## Editing files
+
+- Do NOT edit files via bash heredocs (`<<EOF`), `python3 -`, `sed -i`, or
+  other shell-script mutation. Use the Read + Edit/Write tools for every file
+  change; Bash is for building, testing, git, and process work only.
+
 ## Build / check
 
 ```
