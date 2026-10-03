@@ -259,7 +259,7 @@ pub struct ServiceStateRow {
 }
 
 /// Row of a `log_line` event.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LogRow {
     pub at: u64,
     pub line: String,
