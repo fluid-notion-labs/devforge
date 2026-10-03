@@ -149,6 +149,46 @@ pub fn after_order(
     out
 }
 
+/// Stamp marks "this job last ran cleanly at ..." — `.devforge/stamps/<job>`.
+pub fn stamp_path(root: &std::path::Path, job: &str) -> std::path::PathBuf {
+    root.join(".devforge/stamps").join(job)
+}
+
+/// Job staleness (spec: Jobs): stale when the stamp is missing or any
+/// `stale_when` glob match is newer than the stamp mtime.
+pub fn is_stale(job: &JobSpec, root: &std::path::Path, name: &str) -> bool {
+    let stamp = stamp_path(root, name);
+    let Some(stamp_time) = stamp.metadata().ok().and_then(|m| m.modified().ok()) else {
+        return !job.stale_when.is_empty();
+    };
+    for pattern in &job.stale_when {
+        // glob crate quirk: a bare trailing `**` matches nothing —
+        // `<dir>/**` sensibly means `<dir>/**/*` here.
+        let expanded: Vec<String> = if pattern == "**" {
+            vec![pattern.clone()]
+        } else if pattern.ends_with("/**") {
+            vec![format!("{pattern}/*")]
+        } else {
+            vec![pattern.clone()]
+        };
+        for p in expanded {
+            let full = root.join(&p);
+            let Ok(paths) = glob::glob(&full.to_string_lossy()) else {
+                continue;
+            };
+            for path in paths.flatten() {
+                if let Ok(meta) = path.metadata()
+                    && let Ok(mtime) = meta.modified()
+                    && mtime > stamp_time
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,43 +254,4 @@ all = ["web", "api"]
         let set = vec!["loop1".to_string(), "loop2".to_string()];
         assert_eq!(after_order(&set, &s.services), vec!["loop1", "loop2"]);
     }
-}
-/// Stamp marks "this job last ran cleanly at ..." — `.devforge/stamps/<job>`.
-pub fn stamp_path(root: &std::path::Path, job: &str) -> std::path::PathBuf {
-    root.join(".devforge/stamps").join(job)
-}
-
-/// Job staleness (spec: Jobs): stale when the stamp is missing or any
-/// `stale_when` glob match is newer than the stamp mtime.
-pub fn is_stale(job: &JobSpec, root: &std::path::Path, name: &str) -> bool {
-    let stamp = stamp_path(root, name);
-    let Some(stamp_time) = stamp.metadata().ok().and_then(|m| m.modified().ok()) else {
-        return !job.stale_when.is_empty();
-    };
-    for pattern in &job.stale_when {
-        // glob crate quirk: a bare trailing `**` matches nothing —
-        // `<dir>/**` sensibly means `<dir>/**/*` here.
-        let expanded: Vec<String> = if pattern == "**" {
-            vec![pattern.clone()]
-        } else if pattern.ends_with("/**") {
-            vec![format!("{pattern}/*")]
-        } else {
-            vec![pattern.clone()]
-        };
-        for p in expanded {
-            let full = root.join(&p);
-            let Ok(paths) = glob::glob(&full.to_string_lossy()) else {
-                continue;
-            };
-            for path in paths.flatten() {
-                if let Ok(meta) = path.metadata()
-                    && let Ok(mtime) = meta.modified()
-                    && mtime > stamp_time
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
 }
