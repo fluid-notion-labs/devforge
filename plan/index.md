@@ -10,6 +10,14 @@ Cloudflare Worker API (see `vendor/pview` for the founding topology:
 vite dev server, `wrangler dev`, wrangler-local D1, codegen/wasm jobs,
 lazy-search auxiliary).
 
+Progress: **M0** (sqlite store, tokio-rusqlite actor, migrations) and **M1**
+(IPC socket — verbs + subscribe stream; TUI over the contract; PTY process
+supervision with TERM→KILL group stop; vite/wrangler/cargo pattern sets;
+jobs) are committed and integration-tested; a daemon + TUI smoke test in a
+temp repo passes end to end. One clarification vs `spec.md`: the socket
+speaks the `Verb` JSON contract directly (newline-delimited); MCP tool
+framing will be layered over the same verbs, not replace them.
+
 ## Documents
 
 - **[spec.md](spec.md)** — the design: scenario TOML, declarative providers

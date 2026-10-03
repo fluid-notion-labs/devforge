@@ -217,6 +217,12 @@ This symmetry is deliberate: **there is exactly one engine API**, and MCP /
 TUI / GPUI are just three clients of it. Anything the UI can do, an agent
 can do, and vice versa.
 
+Framing note (M1, implemented as designed): the socket is
+newline-delimited JSON — one `Verb` line in, one `Reply` line out; the
+reserved `subscribe` verb hands the connection to a one-way push of
+`StreamEvent` lines. MCP tool framing layers on the same verbs later; the
+wire contract doesn't change.
+
 ## MCP server
 
 Transport: the orchestrator listens on a local socket (`~/.devforge/socket`
