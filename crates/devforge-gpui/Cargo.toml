@@ -1,0 +1,14 @@
+[package]
+name = "devforge-gpui"
+version = "0.1.0"
+edition = "2024"
+description = "GPUI front-end for devforge (M4 target GUI; excluded from workspace until engine is stable)"
+
+# Not built yet: see README.md. Depends on devforge-core per the design
+# (front-ends are pure IPC clients), but keep it out of the build for now.
+#
+# [dependencies]
+# devforge-core = { path = "../devforge-core" }
+# gpui = { git = "https://github.com/zed-industries/zed" }
+# tokio = { workspace = true }
+# anyhow = { workspace = true }
