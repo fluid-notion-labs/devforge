@@ -126,7 +126,10 @@ Design points:
 - **Jobs** are run-to-completion tasks with status output and a tail; they
   can also be marked `stale_when` (e.g. `setup` when `rust/crates/core/src/**`
   mtimes newer than the stamp) — v1 policy: surface staleness as a badge and
-  offer the job, do not auto-run.
+  offer the job, do not auto-run. Stamps live at `.devforge/stamps/<job>` and
+  are rewritten by every clean job run. Note on glob semantics: a trailing
+  `<dir>/**` means `<dir>/**/*` (the `glob` crate matches nothing for a bare
+  trailing `**`).
 
 ## Providers
 

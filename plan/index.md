@@ -14,9 +14,13 @@ Progress: **M0** (sqlite store, tokio-rusqlite actor, migrations) and **M1**
 (IPC socket — verbs + subscribe stream; TUI over the contract; PTY process
 supervision with TERM→KILL group stop; vite/wrangler/cargo pattern sets;
 jobs) are committed and integration-tested; a daemon + TUI smoke test in a
-temp repo passes end to end. One clarification vs `spec.md`: the socket
-speaks the `Verb` JSON contract directly (newline-delimited); MCP tool
-framing will be layered over the same verbs, not replace them.
+temp repo passes end to end. **M2** is in: full profile wiring (`after`
+reorder within the set, lazy-by-list, companion warnings), `compiling ⇄ up`
+from provider patterns, `npm_scripts` enumeration verb, and job staleness
+(`stale_when` globs vs stamp mtime, stamps on clean runs). One clarification
+vs `spec.md`: the socket speaks the `Verb` JSON contract directly
+(newline-delimited); MCP tool framing will be layered over the same verbs,
+not replace them.
 
 ## Documents
 
