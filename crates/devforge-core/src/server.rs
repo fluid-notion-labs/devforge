@@ -10,7 +10,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use crate::config::{self, Scenario};
+use crate::config::{self, Scenario, after_order};
 use crate::error::{EngineError, Result};
 use crate::ipc::{DEFAULT_SOCKET_PATH, Reply, Verb};
 use crate::state::ServiceState;
@@ -250,11 +250,21 @@ impl Engine {
         Ok(json!({ "state": "timeout" }))
     }
 
-    /// Start a profile (or the default: every non-lazy service, config order).
+    /// Start a profile: named set, or the default (every non-`lazy` service
+    /// in config order). Advisory `after` edges reorder the start sequence
+    /// within the set — missing companions are warnings, never surprise boots.
     async fn start_profile(&self, profile: Option<String>) -> Reply {
         let scenario = self.scenario.read().await;
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+
         let names: Vec<String> = match &profile {
-            Some(p) => scenario.profiles.get(p).cloned().unwrap_or_default(),
+            Some(p) => match scenario.profiles.get(p) {
+                Some(list) => list.clone(),
+                None => {
+                    return EngineError::UnknownProfile { name: p.clone() }.into_reply();
+                }
+            },
             None => scenario
                 .services
                 .iter()
@@ -262,19 +272,45 @@ impl Engine {
                 .map(|(k, _)| k.clone())
                 .collect(),
         };
-        let mut started = Vec::new();
-        let mut errors = Vec::new();
-        for name in names {
-            let Some(spec) = scenario.services.get(&name) else {
-                errors.push(format!("profile names unknown service `{name}`"));
+
+        // Unknown names become errors; drop them from the set.
+        let set: Vec<String> = names
+            .into_iter()
+            .filter(|n| {
+                if scenario.services.contains_key(n) {
+                    true
+                } else {
+                    errors.push(format!("profile names unknown service `{n}`"));
+                    false
+                }
+            })
+            .collect();
+
+        // Advisory `after`: order within the set; warn about companions absent.
+        let ordered = after_order(&set, &scenario.services);
+        for name in &ordered {
+            let Some(spec) = scenario.services.get(name) else {
                 continue;
             };
+            for dep in &spec.after {
+                if !set.contains(dep) && scenario.services.contains_key(dep) {
+                    warnings.push(format!(
+                        "service `{name}` prefers `{dep}` — not in this profile, not starting it"
+                    ));
+                }
+            }
+        }
+
+        let mut started = Vec::new();
+        for name in ordered {
+            // Config guarantees these exist (filtered above).
+            let spec = scenario.services.get(&name).expect("set filtered");
             match self.sup.start(&name, spec).await {
                 Ok(_) => started.push(name),
                 Err(e) => errors.push(e.to_string()),
             }
         }
-        Reply::Ok(json!({ "started": started, "errors": errors }))
+        Reply::Ok(json!({ "started": started, "warnings": warnings, "errors": errors }))
     }
 
     /// Run a `[jobs.*]` entry to completion: shell-free argv, output tailed

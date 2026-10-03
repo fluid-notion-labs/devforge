@@ -11,7 +11,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.9"
+toml = { version = "0.9", features = ["preserve_order"] } # keep scenario file order (UI list order)
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 indexmap = { version = "2", features = ["serde"] }
