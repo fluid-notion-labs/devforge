@@ -28,6 +28,13 @@ pub enum EngineError {
     StoreOpenIo { path: PathBuf, message: String },
     #[error("store query failed: {message}")]
     StoreQuery { message: String },
+    #[error("failed to bind socket {}: {source}", path.display())]
+    Socket {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("ipc error: {message}")]
+    Ipc { message: String },
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
 }

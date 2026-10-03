@@ -202,6 +202,49 @@ impl Store {
             .map_err(|e| EngineError::StoreQuery { message: e.to_string() })?;
         Ok(())
     }
+
+    /// Last `tail` event rows for an `event_query`, newest last; optional
+    /// `service`/`kind` filters.
+    pub async fn event_query(
+        &self,
+        service: Option<String>,
+        kind: Option<String>,
+        tail: u64,
+    ) -> Result<Vec<EventRow>> {
+        self.conn
+            .call(move |conn| -> rusqlite::Result<_> {
+                let mut sql = "SELECT at, service, kind, payload FROM events".to_string();
+                let mut clauses = Vec::new();
+                if service.is_some() {
+                    clauses.push("service = ?1");
+                }
+                if kind.is_some() {
+                    clauses.push("kind = ?2");
+                }
+                if !clauses.is_empty() {
+                    sql.push_str(" WHERE ");
+                    sql.push_str(&clauses.join(" AND "));
+                }
+                sql.push_str(" ORDER BY at DESC, id DESC LIMIT ?3");
+                let mut stmt = conn.prepare(&sql)?;
+                let mut rows = stmt
+                    .query_map(params![service, kind, tail as i64], |r| {
+                        Ok(EventRow {
+                            at: r.get::<_, i64>(0)? as u64,
+                            service: r.get(1)?,
+                            kind: r.get(2)?,
+                            payload: r.get(3)?,
+                        })
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                rows.reverse();
+                Ok(rows)
+            })
+            .await
+            .map_err(|e| EngineError::StoreQuery {
+                message: e.to_string(),
+            })
+    }
 }
 
 /// Row of the `state` table.
@@ -220,6 +263,15 @@ pub struct ServiceStateRow {
 pub struct LogRow {
     pub at: u64,
     pub line: String,
+}
+
+/// Row of an `events` query result.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EventRow {
+    pub at: u64,
+    pub service: Option<String>,
+    pub kind: String,
+    pub payload: Option<String>,
 }
 
 #[allow(unused)]
