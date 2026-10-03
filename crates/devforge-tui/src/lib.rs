@@ -42,6 +42,10 @@ fn status_name(state: ServiceState) -> String {
 /// Everything the UI renders; updated from the IPC state stream.
 pub struct TuiModel {
     pub profile: String,
+    pub profiles: Vec<String>,
+    pub profiles_idx: usize,
+    /// Profile selected for the *next* start (`a`); corresponds to the cycle.
+    pub queued_profile: Option<String>,
     pub services: Vec<ServiceRow>,
     pub selected: usize,
     pub quit: bool,
@@ -60,6 +64,9 @@ impl Default for TuiModel {
     fn default() -> Self {
         Self {
             profile: "—".into(),
+            profiles: Vec::new(),
+            profiles_idx: 0,
+            queued_profile: None,
             services: Vec::new(),
             selected: 0,
             quit: false,
@@ -70,10 +77,30 @@ impl Default for TuiModel {
 }
 
 impl TuiModel {
+    /// Cycle the queued (next-start) profile; returns the chosen name.
+    fn cycle_profile(&mut self, forward: bool) -> Option<String> {
+        if self.profiles.is_empty() {
+            return None;
+        }
+        let n = self.profiles.len();
+        self.profiles_idx = if forward {
+            (self.profiles_idx + 1) % n
+        } else {
+            (self.profiles_idx + n - 1) % n
+        };
+        let name = self.profiles[self.profiles_idx].clone();
+        self.queued_profile = Some(name.clone());
+        Some(name)
+    }
+
     fn apply_status(&mut self, status: ScenarioStatus) {
         self.profile = status
             .profile
             .unwrap_or_else(|| format!("none [{}]", status.name));
+        self.profiles = status.profiles.clone();
+        if self.profiles_idx >= self.profiles.len() {
+            self.profiles_idx = 0;
+        }
         self.services = status
             .services
             .into_iter()
@@ -197,6 +224,47 @@ async fn handle_key(model: &mut TuiModel, client: &mut Client, key: crossterm::e
                 Reply::Err { message } => model.message = Some(message),
             }
         }
+        KeyCode::Char('p') | KeyCode::Char('P') => {
+            if let Some(p) = model.cycle_profile(key.code == KeyCode::Char('p')) {
+                model.message = Some(format!("profile selected: {p}"));
+            } else {
+                model.message = Some("no profiles defined in the scenario".into());
+            }
+        }
+        KeyCode::Char('a') => {
+            let profile = model.queued_profile.clone();
+            match client.call(&Verb::ScenarioStart { profile }).await {
+                Reply::Ok(v) => {
+                    let mut msg = format!("started {:?}", v["started"]);
+                    if let Some(warns) = v["warnings"].as_array()
+                        && !warns.is_empty()
+                    {
+                        msg.push_str(" — ");
+                        msg.push_str(
+                            &warns
+                                .iter()
+                                .filter_map(|w| w.as_str())
+                                .collect::<Vec<_>>()
+                                .join("; "),
+                        );
+                    }
+                    if let Some(errs) = v["errors"].as_array()
+                        && !errs.is_empty()
+                    {
+                        msg.push_str(" !! ");
+                        msg.push_str(
+                            &errs
+                                .iter()
+                                .filter_map(|e| e.as_str())
+                                .collect::<Vec<_>>()
+                                .join("; "),
+                        );
+                    }
+                    model.message = Some(msg);
+                }
+                Reply::Err { message } => model.message = Some(message),
+            }
+        }
         _ => {}
     }
 }
@@ -264,8 +332,9 @@ fn ui(f: &mut ratatui::Frame, model: &TuiModel) {
     }
 
     let bar = Paragraph::new(format!(
-        " profile: {}  (q quit, j/k select, s/x/r, L logs)",
-        model.profile
+        " profile: {} | next: {}  (q quit, j/k select, s/x/r, L logs, p cycle profile, a start profile)",
+        model.profile,
+        model.queued_profile.as_deref().unwrap_or("default")
     ));
     f.render_widget(bar, _bar);
 }
