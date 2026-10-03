@@ -419,22 +419,73 @@ fn io_err(e: impl std::fmt::Display) -> EngineError {
     }
 }
 
-/// Provider-pattern signal classification (v1: pattern heuristics only).
-#[allow(dead_code)] // wrangler/cargo sets land in step 5
+#[allow(dead_code)] // Failure/Compiling exercised in step-5 tests
+#[derive(Debug, PartialEq)]
 enum Signal {
     Ready { pattern: String },
     Compiling { signal: String },
     Failure { signal: String },
 }
 
-/// Basic v1 heuristic: user `ready_when` contains-match. The per-provider
-/// pattern sets (vite/wrangler/cargo) land with the step-5 provider pass.
-fn line_match(line: &str, _provider: ProviderKind, ready_when: Option<&str>) -> Option<Signal> {
-    ready_when
-        .filter(|p| line.contains(p))
-        .map(|pattern| Signal::Ready {
+/// Provider-pattern signal classification (v1: pattern heuristics only).
+/// An explicit `ready_when` always wins over the provider defaults. Failure
+/// patterns emit `Failure` signals only — actual `failed` transitions come
+/// from the (nonzero) exit, keeping the state machine honest.
+fn line_match(line: &str, provider: ProviderKind, ready_when: Option<&str>) -> Option<Signal> {
+    if let Some(pattern) = ready_when.filter(|p| line.contains(p)) {
+        return Some(Signal::Ready {
             pattern: pattern.to_string(),
-        })
+        });
+    }
+    match provider {
+        ProviderKind::Npm => {
+            // vite is the npm dev server of record here
+            if line.contains("ready in") {
+                return Some(Signal::Ready {
+                    pattern: "ready in (vite)".into(),
+                });
+            }
+            if line.contains("error during build") || line.contains("Internal server error") {
+                return Some(Signal::Failure {
+                    signal: "vite build error".into(),
+                });
+            }
+            if line.contains("hmr update") {
+                return Some(Signal::Compiling {
+                    signal: "vite hmr".into(),
+                });
+            }
+            None
+        }
+        ProviderKind::Wrangler => {
+            if line.contains("Ready on http") {
+                return Some(Signal::Ready {
+                    pattern: "Ready on http (wrangler)".into(),
+                });
+            }
+            let lower = line.to_ascii_lowercase();
+            if lower.contains("watching for file changes") {
+                return Some(Signal::Compiling {
+                    signal: "wrangler reload".into(),
+                });
+            }
+            None
+        }
+        ProviderKind::Cargo => {
+            if line.starts_with("error[") || line.starts_with("error:") {
+                return Some(Signal::Failure {
+                    signal: "cargo compile error".into(),
+                });
+            }
+            if line.starts_with("Compiling ") {
+                return Some(Signal::Compiling {
+                    signal: "cargo compiling".into(),
+                });
+            }
+            None
+        }
+        ProviderKind::Exec => None,
+    }
 }
 
 async fn transition_v(
@@ -456,4 +507,69 @@ async fn transition_v(
         tracing::warn!("transition record failed: {e}");
     }
     let _ = events.send(StreamEvent::Transition(t));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn m(provider: ProviderKind, line: &str, ready: Option<&str>) -> Option<Signal> {
+        match line_match(line, provider, ready) {
+            Some(Signal::Ready { pattern }) => Some(Signal::Ready { pattern }),
+            Some(Signal::Compiling { signal }) => Some(Signal::Compiling { signal }),
+            Some(Signal::Failure { signal }) => Some(Signal::Failure { signal }),
+            None => None,
+        }
+    }
+
+    #[test]
+    fn explicit_ready_pattern_wins() {
+        assert!(m(ProviderKind::Exec, "listening on 9000", Some("listening")).is_some());
+        assert_eq!(m(ProviderKind::Exec, "listening", Some("ready")), None);
+    }
+
+    #[test]
+    fn npm_vite_patterns() {
+        assert!(matches!(
+            m(ProviderKind::Npm, "  ➜  Local:  ready in 300 ms", None),
+            Some(Signal::Ready { .. })
+        ));
+        assert!(matches!(
+            m(ProviderKind::Npm, "hmr update /src/main.ts", None),
+            Some(Signal::Compiling { .. })
+        ));
+        assert!(matches!(
+            m(ProviderKind::Npm, "error during build:", None),
+            Some(Signal::Failure { .. })
+        ));
+    }
+
+    #[test]
+    fn wrangler_patterns() {
+        assert!(matches!(
+            m(
+                ProviderKind::Wrangler,
+                "Ready on http://127.0.0.1:8787",
+                None
+            ),
+            Some(Signal::Ready { .. })
+        ));
+        assert!(matches!(
+            m(ProviderKind::Wrangler, "Watching for file changes...", None),
+            Some(Signal::Compiling { .. })
+        ));
+    }
+
+    #[test]
+    fn cargo_patterns() {
+        assert!(matches!(
+            m(ProviderKind::Cargo, "Compiling devforge-core v0.1.0", None),
+            Some(Signal::Compiling { .. })
+        ));
+        assert!(matches!(
+            m(ProviderKind::Cargo, "error[E0432]: unresolved import", None),
+            Some(Signal::Failure { .. })
+        ));
+        assert_eq!(m(ProviderKind::Cargo, "Finished dev profile", None), None);
+    }
 }

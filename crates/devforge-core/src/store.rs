@@ -10,7 +10,7 @@ use tokio_rusqlite::Connection;
 use tracing::info;
 
 use crate::error::{EngineError, Result};
-use crate::state::{ServiceState, Transition, TransitionCause};
+use crate::state::{ServiceState, Transition};
 
 /// Schema history. Every change appends a migration; never edit an applied one.
 fn migrations() -> Migrations<'static> {
@@ -319,6 +319,3 @@ pub struct EventRow {
     pub kind: String,
     pub payload: Option<String>,
 }
-
-#[allow(unused)]
-fn unused(cause: &TransitionCause) {}
